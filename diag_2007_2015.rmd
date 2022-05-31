@@ -5,6 +5,10 @@ date: "May 16th, 2022"
 output: html_document
 ---
 
+In this module, I demonstrate 
+- how to read multi-year diagnosis datasets by selecting needed variables from Optum in loops
+- how to identify whether the diagnosis is mental health disorder
+- merge diagnosis data with social-economic information
 
 
 ```{r load packages and map file names }
@@ -79,51 +83,8 @@ ID_list<-fread("/N/slate/yenb/R/Optum/full_data/ID_list_ses_mbrcoenroll.csv")
 ID_list$PATID<-as.factor(ID_list$PATID)
 ```
 
-# Read MH diagnosis files for 2007-2015
-## Generate  diagnosis list for ICD-9
 
-```{r generate psychotic diagnosis list}
-library(touch)
-print(file_patterns['MED_DIAGNOSIS'])
-diagnosis_file_list<-list.files(path=optum_data_dir, "ses_diag")
-diagnosis_file_list 
-
-# Set up location for saving diagnosis files
-diagnosis_path<-"/N/slate/yenb/R/Optum/full_data/diagnosis_crosstable/"
-
-# Generate MH diagnosis
-length<-1000 # because there are at most 3 digits after F2
-## (1) Psychotic disorders: ICD-10 include F20-F29, According to     https://www.icd10data.com/Convert/Results, ICD -9 include the following accordingly: 
-psychotic_list<-rep("F2",length)
-psychotic_num<-seq(0,999,length=1000) # because there are at most 3 digits after F2
-psychotic_num<-str_pad(psychotic_num, 3, pad = "0")
-psychotic_disorder<-paste(psychotic_list,psychotic_num,sep="")
-psychotic_disorder
-
-psychotic_list_1<-unique(icd_map(substr(psychotic_disorder,1,3),from=10,to=9))
-psychotic_list_1<-unlist(strsplit(psychotic_list_1,","))
-psychotic_list_1
-psychotic_list_2<-unique(icd_map(substr(psychotic_disorder,1,4),from=10,to=9))
-psychotic_list_2<-unlist(strsplit(psychotic_list_2,","))
-psychotic_list_2
-
-psychotic_list_3<-unique(icd_map(substr(psychotic_disorder,1,5),from=10,to=9))
-psychotic_list_3<-unlist(strsplit(psychotic_list_3,","))
-psychotic_list_3
-psychotic_list<-unique(append(psychotic_list_1,psychotic_list_2))
-psychotic_list<-unique(append(psychotic_list,psychotic_list_3))
-psychotic_list<-unlist(strsplit(psychotic_list,c("[+]")))
-psychotic_list # "30122" "2970"  "2971"  "2972"  "2983"  "2984"  "2988"  "2973"  "2989"  "29530" "29510" "29520" "29590" "29560" "29570", "29540" "29580"
-
-attr(psychotic_list,"doc")<-"psychotic_list: psychotic disorders converts from ICD10,F20-F29, to ICD 9"
-save(psychotic_list,file="/N/slate/yenb/R/Optum/full_data/diagnosis_crosstable/ICD9_psychotic_list.RData")
-psychotic_list<-data.table(psychotic_list)
-fwrite(psychotic_list,paste(diagnosis_path,"ICD9_psychotic_list.csv",sep=""))
-
-```
-
-
-## Read and merge 2007 q1 to 2007 q4 diagnosis data
+# 1. Read and merge 2007 q1 to 2007 q4 diagnosis data
 
 ```{r round 1 to 4}
 library(touch)
@@ -169,13 +130,21 @@ for (i in 1:4){
 
 print("almost finish running")
 toc()
-fwrite(diagnosis_data_1_4,pate(diagnosis_path,"full_data/ses_diag_1_5.csv",sep=""))
+fwrite(diagnosis_data_1_4,paste(diagnosis_path,"full_data/ses_diag_1_4.csv",sep=""))
 
 #  SECONDS
 ```
 
+# 2. merge diagnosis data with social-economic information
+```{r}
+# extract the common variables from 2007 iagnosis data and social-economic data (ID_list)
+common_cols<-janitor::compare_df_cols(diagnosis_data_1_4,ID_list)%>%filter(!is.na(diagnosis_data_1_4))%>%filter(!is.na(ID_list))
+common_cols
+
+merged_df<-merge(diagnosis_data_1_4,ID_list,by=common_cols$column_name,all.x=TRUE)
 
 
+```
 
 
 

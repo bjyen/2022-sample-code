@@ -1,0 +1,430 @@
+---
+title: "Medical Panel Expenditure Survey"
+output: html_notebook
+date: May 1, 2022
+---
+
+In this module, I will show how to read 2008 MEPS data, merge consolidated, prescription, and outpatient datasets to person level step by step.
+
+
+
+
+```{r Install and load packages}
+# Install and load packages.
+
+if (!require("pacman")) {
+  install.packages("pacman")
+  library(pacman)
+}
+
+p_load(foreign, survey, ggplot2, dplyr, stringr)
+```
+
+```{r Read the data sets for 2008}
+# Download the data in https://meps.ahrq.gov/data_stats/download_data_files.jsp
+
+# Read consolidated data
+consolidated<-read.xport("~/Data/2008/consolidated_2008.ssp")
+nrow(consolidated)
+length(unique(consolidated$DUPERSID)) # there are 33066 people, and 33066 observations
+# Read the outpatient data
+outpatient<-read.xport("~/Data/2008/outpatient_2008.ssp")
+nrow(outpatient) #11173 obs 
+length(unique(outpatient$DUPERSID)) # there are 4101 persons, so we know some person has more than one data points
+
+# Read medical condition
+medical_condition<-read.xport("~/Data/2008/medical_condition_2008.ssp")
+nrow(medical_condition) #102169 
+length(unique(medical_condition$DUPERSID)) # there are 26028 persons, so we know some person has more than one data points
+
+
+# Read prescribed medicine
+prescribed<-read.xport("~/Data/2008/prescribed_medicine_2008.ssp")
+
+nrow(prescribed) # There are 293379 observations
+length(unique(prescribed$DUPERSID)) # there are 18595 persons, so we know some person has more than one data points
+
+```
+
+
+# Outpatient visit
+
+- OPFTC08X 	Total facility charge
+-	Person number                             
+- OPDTC08X   TOTAL DOCTOR CHARGE (IMPUTED)
+- *OPTC08X*: total charge for the event (which includes both facility and physician charges (OPFTC08X+OPDTC08X))
+
+- OPFXP08X: Facility sum payments 
+- OPDXP08X: Doctor sum payments
+- *OPXP08X*, Total expenditure for event (OPFXP08X+OPDXP08X) which includes both facility and physician amounts.
+- **Mean out-of-pocket* payment per visit	OPDSF08X (Doctor amount paid) +OPFSF08X (self/family (OPFSF08X))
+
+- SEEDOC Did patient talk to MD this visit
+- SEETLKPV	Did patient visit professional in person or telephone                               
+- MEDPTYPE: Type of MED person patient talked to on visit date (10:psychologists, 11:social worker)
+- DRSPLTY: OPAT doctor’s specialty (6: Family practice, 8:general practice,14: Internal medicine; 28: psychiatry)
+
+- OTHSVCE :	This visit did patient have other diagnosis test/exam
+- MEDPRESC	Any medicine prescribed for patient this visit
+- Total expense for event
+-	VSTCTGRY : Best category for care patient perceived on visit date (psychotherapy/mental health counseling) 
+- OPCCC1X,OPCCC2X,OPCCC3X,OPCCC4X    MODIFIED CLINICAL CLASSIFICATION CODE 
+
+### Psychotherapy
+-	VSTCTGRY : Best category for care patient perceived on visit date (psychotherapy/mental health counseling) 
+- PSYCHOTH: Did patient have psychotherapy/counseling
+- MEDPTYPE: 10 Psychogist, 11 social worker
+- MEDPTYPE: Type of MED person patient talked to on visit date (10:psychologists, 11:social worker)
+- DRSPLTY: OPAT doctor’s specialty (6: Family practice, 8:general practice,14: Internal medicine; 28: psychiatry)
+
+
+OPFTC17X, OPDTC17X, SEEDOC,SEETLKPV,OPTC17X,MEDPTYPE,DRSPLTY,OTHSVCE,MEDPRESC, VSTCTGRY
+```{r}
+outpatient$OPCCC1X_num<-as.numeric(outpatient$OPCCC1X)
+outpatient$OPCCC2X_num<-as.numeric(outpatient$OPCCC2X)
+outpatient$OPCCC3X_num<-as.numeric(outpatient$OPCCC3X)
+outpatient$OPCCC4X_num<-as.numeric(outpatient$OPCCC4X)
+
+sum(is.na(outpatient$OPCCC1X))
+sum(is.na(outpatient$OPCCC2X))
+sum(is.na(outpatient$OPCCC3X))
+sum(is.na(outpatient$OPCCC4X))
+
+# Select the needed variables
+outpatient <- as.data.frame(outpatient)
+outpatient<-outpatient%>%
+ select("DUPERSID","OPFTC08X","OPDTC08X","OPXP08X","OPTC08X","OPDSF08X","OPFSF08X","SEEDOC","SEETLKPV","DRSPLTY","MEDPTYPE","OTHSVCE","VSTCTGRY","OPCCC1X","OPCCC2X","OPCCC3X","OPCCC4X",
+    "OPFXP08X", "OPDXP08X","OPICD1X","OPICD2X","OPICD3X","OPICD4X")
+```
+
+
+```{r generate doctor specialty, mental health diagnosis, total expenditure for mental health diagnosis}
+#install.packages("operators")
+str(outpatient$OPCCC1X)
+outpatient_tmp<- outpatient %>%
+  #create doctor specialty
+  dplyr::mutate(family_practice=(DRSPLTY==6),
+                general_practice=(DRSPLTY==8),
+                internal_medicine=(DRSPLTY==14),
+                psychiatrist=(DRSPLTY==28),
+                psychologist=(MEDPTYPE==10),
+                social_worker=(MEDPTYPE==11))%>%
+    dplyr::mutate(outpatient_psychotherapy=(VSTCTGRY==4))%>%
+    mutate(outpatient_mental_diag =((OPCCC1X %in% seq(650,670))| 
+                                    (OPCCC2X %in% seq(650,670)) | 
+                                    (OPCCC3X %in% seq(650,670)) | 
+                                   (OPCCC4X %in% seq(650,670)))) %>%
+  
+   # substance use c(291,292,303,304,305) http://www.icd9data.com/2013/Volume1/290-319/300-316/default.html
+  # substance use CCC: 660 alcohol, 661 substance-related 
+  mutate(outpatient_substance_diag=
+                             (OPCCC1X %in% c(660,661)) | 
+                             (OPCCC2X %in% c(660,661)) | 
+                             (OPCCC3X %in% c(660,661)) | 
+                             (OPCCC4X %in% c(660,661))) %>%
+  mutate(outpatient_mental_only_diag=(outpatient_mental_diag & !outpatient_substance_diag)) %>%
+  # physical health diagnosis
+  mutate(outpatient_physical_diag = ((OPCCC1X !=c(-1,-9)) | (OPCCC2X !=c(-1,-9)) | (OPCCC3X !=c(-1,-9)) | (OPCCC4X !=c(-1,-9))) & !outpatient_mental_diag) %>%
+  filter(OPFTC08X!=-1| OPDTC08X!=-1| OPXP08X!=-1 |OPTC08X!=-1|OPDSF08X!=-1| OPFSF08X!=-1)%>%
+  
+# Add anxiety(ICD: 300 CCC: 651) and depression(311 CCC=657), and epsodic mood(ICD=296,CCC=NA)
+# insomnia has only 5-digit ICD9 code
+
+   mutate(outpatient_anxiety = ifelse((OPCCC1X ==651) | 
+                               (OPCCC2X ==651) | 
+                               (OPCCC3X ==651) | 
+                               (OPCCC4X ==651),1,0)) %>%
+  mutate(outpatient_depression=ifelse((OPCCC1X ==657) |
+                               (OPCCC2X ==657) |
+                               (OPCCC3X ==657) |
+                               (OPCCC4X ==657),1,0))%>%
+  # Miscellaneous disorders: inclduing dleep disorder
+   mutate(outpatient_miscellaneous_MH=ifelse((OPCCC1X ==670) |
+                               (OPCCC2X ==670) |
+                               (OPCCC3X ==670) |
+                               (OPCCC4X ==670),1,0))%>%
+  # Pain: I could not include only chronic pain because MEPS only gives 3 digit instead of 4 digit ICD code
+  mutate(outpatient_pain=ifelse((OPICD1X==338)|(OPICD2X==338)|(OPICD3X==338)|(OPICD4X==338),1,0))
+
+# 
+outpatient_tmp<-outpatient_tmp %>%
+  mutate(op_totexp_MH = ifelse(outpatient_mental_diag==1, OPFXP08X+OPDXP08X,
+               ifelse(outpatient_mental_diag==0, 0, NA)))
+
+
+```
+## Zip to person level
+```{r}
+#  zip the data to one person has only one row in 2008
+outpatient_tmp<-outpatient_tmp%>%
+  group_by(DUPERSID) %>%
+  dplyr::summarise(family_practice_visits=sum(family_practice,na.rm=T),
+                   general_practice_visits=sum(general_practice,na.rm=T),
+                   internal_medicine_visits=sum(internal_medicine,na.rm=T),
+                   psychiatrist_visits=sum(psychiatrist,na.rm=T),
+                   psychologist_visits=sum(psychologist,na.rm=T),
+                   social_worker_visits=sum(social_worker,na.rm=T),
+                   
+                   psychotherapy_visits=sum(outpatient_psychotherapy,na.rm=T),
+                   
+                   outpatient_mental_diag_sum = sum(outpatient_mental_diag,na.rm=T), 
+                   outpatient_physical_diag_sum = sum(outpatient_physical_diag,na.rm=T),
+                   outpatient_substance_diag_sum=sum(outpatient_substance_diag,na.rm=T),
+                   outpatient_mental_only_diag_sum=sum(outpatient_mental_only_diag,na.rm=T),
+                   outpatient_anxiety_sum=sum(outpatient_anxiety,na.rm=T),
+                   outpatient_depression_sum=sum(outpatient_depression,na.rm=T),
+                   outpatient_pain_sum=sum(outpatient_pain,na.rm=T),
+                   #outpatient_epsodic_sum=sum(outpatient_epsodic),
+                   
+                   
+                   OPTC08X_sum=sum(OPTC08X,na.rm=T), # Total charge for the event
+                   OPXP08X_sum=sum(OPXP08X,na.rm=T), # total expenditure for the event
+                   mean_out_of_pocket=sum(OPDSF08X,OPFSF08X,na.rm=T), # mean out of pocket 
+                   OPDSF08X_sum=sum(OPDSF08X,na.rm=T),
+                   OPFSF08X_sum=sum(OPFSF08X,na.rm=T),
+                   OPFTC08X_sum=sum(OPFTC08X,na.rm=T),
+                   OPDTC08X_sum=sum(OPDTC08X,na.rm=T),
+                   op_totexp_MH_sum=sum(op_totexp_MH,na.rm=T))%>%
+  arrange(desc(outpatient_mental_diag_sum))
+names(outpatient_tmp)
+summary(outpatient_tmp$outpatient_mental_diag_sum)
+
+
+nrow(outpatient_tmp) #4090
+length(unique(outpatient_tmp$DUPERSID)) #4090 people
+
+```
+
+
+# Prescribed medicine
+
+
+```{r generate diagnosis variables}
+sum(is.na(prescribed$RXCCC1X))
+sum(is.na(prescribed$RXCCC2X))
+sum(is.na(prescribed$RXCCC3X))
+
+prescribed$RXCCC1X_num<-as.numeric(prescribed$RXCCC1X)
+prescribed$RXCCC2X_num<-as.numeric(prescribed$RXCCC2X)
+prescribed$RXCCC3X_num<-as.numeric(prescribed$RXCCC3X)
+
+
+
+prescribed_tmp<-prescribed%>%
+     mutate(prescribed_mental_diag=(RXCCC1X_num %in% seq(650,670))|
+                                  (RXCCC2X_num%in% seq(650,670))|
+                                  (RXCCC3X_num %in% seq(650,670)))%>%
+  mutate(prescribed_substance_diag=(RXCCC1X_num %in% c(660,661))| 
+                                   (RXCCC2X_num %in% c(660,661)) | 
+                                   (RXCCC3X_num %in% c(660,661)))%>%
+  mutate(prescribed_mental_only_diag=(prescribed_mental_diag & !prescribed_substance_diag)) %>%
+
+  mutate(prescribed_physical_diag= ((RXCCC1X_num != c(-1,-9)) | (RXCCC2X_num != c(-1,-9)) | (RXCCC3X_num != c(-1,-9)))
+         & !prescribed_mental_diag)%>%
+# Add anxiety(CCC: 300 CCC: 651) and depression(311 CCC=657), and epsodic mood(ICD=296,CCC=NA)
+# insomnia has only 5-digit ICD9 code
+    mutate(prescribed_anxiety = ifelse((RXCCC1X_num==651) | 
+                                (RXCCC2X_num==651) |
+                                (RXCCC3X_num==651),1,0))%>%
+                                 
+  mutate(prescribed_depression= ifelse((RXCCC1X_num==657) | 
+                                (RXCCC2X_num==657)|
+                                (RXCCC3X_num==657),1,0))%>%
+  # Miscellaneous disorders: inclduing dleep disorder
+   mutate(prescribed_miscellaneous_MH=ifelse((RXCCC1X==670) |
+                               (RXCCC2X==670) |
+                               (RXCCC3X==670),1,0))%>%
+  # Pain: I could not include only chronic pain because MEPS only gives 3 digit instead of 4 digit ICD code
+  mutate(prescribed_pain=ifelse((RXICD1X==338)|(RXICD2X==338)|(RXICD3X==338),1,0))
+# %>%
+#                                 
+#    mutate(prescribed_epsodic=ifelse((RXCCC1X_num==296)| 
+#                                  (RXCCC2X_num==296) | 
+#                                  (RXCCC3X_num==296),1,0))  
+
+#View(prescribed_tmp$PURCHRD)
+table(prescribed_tmp$PURCHRD)# 5 rounds per year?
+#View(prescribed_tmp$RXQUANTY)
+table(prescribed_tmp$RXQUANTY)
+
+sum(is.na(prescribed_tmp$prescribed_depression))
+sum(is.na(prescribed_tmp$prescribed_anxiety))
+
+```                            
+```{r zip to panel level}
+# prescribed_tmp is by panel
+prescribed_tmp<-prescribed_tmp%>%
+  group_by(DUPERSID,PANEL)%>%
+  dplyr::summarise(prescribed_mental_diag_sum = sum(prescribed_mental_diag,na.rm=T), 
+                   prescribed_physical_diag_sum = sum(prescribed_physical_diag,na.rm=T),
+                   prescribed_substance_diag_sum = sum(prescribed_substance_diag,na.rm=T),
+                   prescribed_mental_only_diag_sum=sum(prescribed_mental_only_diag,na.rm=T),
+                   prescribed_anxiety_sum=sum(prescribed_anxiety,na.rm=TRUE),
+                   prescribed_depression_sum=sum(prescribed_depression,na.rm=TRUE),
+                   prescribed_pain_sum=sum(prescribed_pain,na.rm=TRUE)
+                   )
+
+```
+## Create the psychotic medicine, benzodiazepine, and narcotics
+- TC1: 57(central nervous system agents), 242 (psychotherapeutic agents),
+- TC1S1: 67, 71, 249, 251
+- TC1S1_1: 69,70,77,79,208,209,306,307,308,341
+- TC1S2_1: 69
+- TC1S3_1: 69,70
+- TC2S1_1: 76, 209
+
+--57 central nervous system agents(level1)
+--67 anxiolytics,sedatives, and hypnotics (include 069 bezodiazepines, 070 miscekkaneous anxiolytics, sedatives, and hypnotics)/ 
+--71 CNS stimulants/antidepressants(include 076 mscellaneous antidepressants, 208 SSRI antidepressants, 209 tricyclic 
+--249 antidepressants(306 phenylpiperazine antidepressants,  307 tetracyclic antidepressants, 308 SSNRI antidepressants)
+--251 antipsychotics (077 miscellaneous antipsychotic agents, 341 atypical antipsychotics)
+ 
+Narcotics:
+TC1S1_1=60,191
+TC1S2_1=60,191
+TC1S3_1=60,191
+
+```{r}
+
+prescribed_tmp2<-prescribed%>%
+  mutate(prescribed_cns=as.numeric(TC1==57))%>%
+  mutate(prescribed_psychotic=as.numeric(TC1S1%in%c(67,71,249,251)|
+                                              TC1S2%in%c(67,71,249,251)|
+                                                TC1S3%in%c(67,71,249,251)))%>%
+  mutate(prescribed_benzo=as.numeric(TC1S1_1==69|TC1S2_1==69|TC1S3_1==69))%>%
+  mutate(prescribed_opioid=as.numeric(TC1S1_1%in%c(60,191)|TC1S2_1%in%c(60,191)|TC1S3_1%in%c(60,191)))
+ # different medicine must be different prescription
+ # mutate(prescribed_opioid_benzo=ifelse(prescribed_opioid==1&prescribed_benzo==1,1,0))%>%
+ #  mutate(prescribed_opioid_psychotic=ifelse(prescribed_opioid==1&prescribed_psychotic==1,1,0))
+
+
+```
+
+## zip to round
+```{r zip to round}
+# prescribed_tmp2$RXDAYSUP
+# (2008,2009) use RXQUANTY, (2010-2017) use RXDAYSUP
+prescribed_tmp3<-prescribed_tmp2%>%
+  group_by(DUPERSID,PANEL,PURCHRD)%>%
+  dplyr::summarise(prescribed_psychotic_sum=sum(prescribed_psychotic,na.rm=T),
+                   dosage_psychotic_round=sum(ifelse(TC1S1%in%c(67,71,249,251),RXQUANTY,0),na.rm=T),# number of psychotic prescriptions dosage and quantity in each round
+                   #day_psychotic_round=sum(ifelse(TC1S1%in%c(67,71,249,251),RXDAYSUP,0)), 
+                   prescribed_benzo_sum=sum(prescribed_benzo,na.rm=T),
+                   dosage_benzo_round=sum(ifelse(TC1S1_1==69,RXQUANTY,0),na.rm=T),
+                   #day_benzo_round=sum(ifelse(TC1S1_1==69,RXDAYSUP,0)),
+                   prescribed_opioid_sum=sum(prescribed_opioid,na.rm=T),# number of opioid prescriptions in each round
+                   dosage_opioid_round=sum(ifelse(TC1S1_1%in%c(60,191),RXQUANTY,0),na.rm=T),
+                   #day_opioid_round=sum(ifelse(TC1S1_1%in%c(60,191),RXDAYSUP,0)),
+                   prescribed_cns_sum=sum(prescribed_cns,na.rm=T),
+                   dosage_cns_round=sum(ifelse(TC1==57,RXQUANTY,0),na.rm=T))
+                   #day_cns_round=sum(ifelse(TC1==57,RXDAYSUP,0)))  
+
+# Yes/No being co-prescribed this panel in same round, panel, year
+prescribed_tmp4<-prescribed_tmp3%>%
+  #mutate(co_prescribed_benzo_opioid = ifelse(prescribed_opioid_sum>0&prescribed_benzo_sum>0,1,0))%>%
+  #mutate(co_prescribed_psychotic_opioid=ifelse(prescribed_opioid_sum>0&prescribed_psychotic_sum>0,1,0))%>%
+  mutate(co_prescribed_benzo_opioid_round=ifelse((dosage_benzo_round>=144 & dosage_opioid_round>0)|(dosage_opioid_round>=144&dosage_benzo_round>0),1,0))%>%
+  mutate(co_prescribed_psychotic_opioid_round=ifelse((dosage_psychotic_round>=144 & dosage_opioid_round>0)|(dosage_opioid_round>=144&dosage_psychotic_round>0),1,0))%>%
+  mutate(co_prescribed_cns_opioid_round=ifelse((dosage_cns_round>=144&dosage_opioid_round>0)|(dosage_cns_round>0&dosage_opioid_round>=144),1,0))
+           
+
+table(prescribed_tmp4$prescribed_benzo_sum)  # one person been prescribed benzo x times in one round (144 days)
+table(prescribed_tmp4$prescribed_opioid_sum) # one person been prescribed opioid x times in one round
+table(prescribed_tmp4$co_prescribed_benzo_opioid_round) # one person been prescribed benzo+opioid in one round
+table(prescribed_tmp4$co_prescribed_psychotic_opioid_round) # one person been prescribed psychotic+opioid once in one round
+table(prescribed_tmp4$co_prescribed_cns_opioid_round) # one person been prescribed cns+opioid once in one round
+```
+
+## zip to panel
+```{r zip to panel}
+prescribed_tmp5<-prescribed_tmp4%>%
+        group_by(DUPERSID,PANEL)%>%
+        dplyr::summarize(prescribed_benzo_panel=sum(prescribed_benzo_sum,na.rm=T),
+                  prescribed_opioid_panel=sum(prescribed_opioid_sum,na.rm=T),
+                  prescribed_psychotic_panel=sum(prescribed_psychotic_sum,na.rm=T),
+                  prescribed_cns_panel=sum(prescribed_cns_sum,na.rm=T),
+                co_prescribed_opioid_benzo_panel=sum(co_prescribed_benzo_opioid_round,na.rm=T), # how many rounds being co-prescribed in one panel
+                 co_prescribed_opioid_psychotic_panel=sum(co_prescribed_psychotic_opioid_round,na.rm=T),
+                co_prescribed_cns_opioid_panel=sum(co_prescribed_cns_opioid_round,na.rm=T))# how many rounds being co-prescribed in one panel
+
+```
+```{r}
+#Combine precribed_tmp and prescribed_tmp5 (DUPERSID,PANEL)
+
+prescribed_tmp6<-inner_join(prescribed_tmp,prescribed_tmp5,by=c("DUPERSID","PANEL"))
+
+prescribed_tmp<-prescribed_tmp6%>%
+  select(DUPERSID,prescribed_mental_diag_sum,prescribed_physical_diag_sum,prescribed_substance_diag_sum,prescribed_mental_only_diag_sum,
+         # in prescribed_tmp9
+         prescribed_psychotic_panel,
+         prescribed_benzo_panel,
+         prescribed_opioid_panel,
+          prescribed_cns_panel,
+         co_prescribed_opioid_benzo_panel,
+         co_prescribed_opioid_psychotic_panel,
+         co_prescribed_cns_opioid_panel,
+         # in prescribed_tmp1
+         prescribed_depression_sum,
+         prescribed_anxiety_sum,
+         prescribed_pain_sum)
+
+```
+## zip to one person
+```{r zip to one person}
+prescribed_tmp2<-prescribed_tmp%>%
+             group_by(DUPERSID)%>%
+            dplyr::summarize(prescribed_mental_diag_year=sum(prescribed_mental_diag_sum,na.rm=T),
+                      prescribed_physical_diag_year=sum(prescribed_physical_diag_sum,na.rm=T),
+                      prescribed_substance_diag_year=sum(prescribed_substance_diag_sum,na.rm=T),
+                      prescribed_mental_only_diag_year=sum(prescribed_mental_only_diag_sum,na.rm=T),
+                   prescribed_psychotic_year=sum(prescribed_psychotic_panel,na.rm=T),
+                      prescribed_benzo_year=sum(prescribed_benzo_panel,na.rm=T),
+                     prescribed_opioid_year=sum(prescribed_opioid_panel,na.rm=T),
+                      prescribed_cns_year=sum(prescribed_cns_panel,na.rm=T), 
+                     co_prescribed_benzo_opioid_year=sum(co_prescribed_opioid_benzo_panel,na.rm=T),
+                     co_prescribed_psychotic_opioid_year=sum(co_prescribed_opioid_psychotic_panel,na.rm=T),
+                   co_prescribed_cns_opioid_year=sum(co_prescribed_cns_opioid_panel,na.rm=T),
+                     prescribed_depression_sum_year=sum(prescribed_depression_sum,na.rm=T),
+                    prescribed_anxiety_sum_year=sum(prescribed_anxiety_sum,na.rm=T),
+                    prescribed_pain_sum_year=sum(prescribed_pain_sum,na.rm=T))
+
+prescribed_tmp<-prescribed_tmp2
+
+```
+
+
+
+# Merge consolidated, outpatient visit, prescribed medicine
+
+
+```{r}
+# The eight-character variable DUPERSID uniquely identifies each person
+# represented on the file and is the combination of the variables DUID and PID
+# full_join(): return all rows and all columns from both x and y. Where there are not matching values, returns NA for the one missing.
+require(plyr)
+merge_tmp_1<-full_join(consolidated, outpatient_tmp, by="DUPERSID")
+# How do I only keep the ID in consolidated_tmp??
+nrow(merge_tmp_1) #33066
+length(unique(merge_tmp_1$DUPERSID)) #33066
+library(tidyr)
+
+
+#merge all the data files
+merge_tmp_2<-full_join(merge_tmp_1, prescribed_tmp, by="DUPERSID") 
+
+merge<-merge_tmp_2
+
+merge$`year`<-"2008"
+length(unique(merge_tmp_3$DUPERSID)) #33066
+
+
+```
+
+```{r export the merged person level data}
+write.csv(merge,"~/Data/2008/merge_2008.csv")
+
+nrow(merge)
+length(unique(merge$DUPERSID))
+
+```
+
